@@ -1,2 +1,2 @@
-# jpeg_encryption
-implementation for JPEG encryption/decryption/testing algorithms
+# JPEG encryptor/decryptor using chaotic maps
+todo
