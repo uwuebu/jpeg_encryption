@@ -12,14 +12,12 @@ link_directories("${JPEG_TURBO_DIR}/lib")
 # Add project headers (stb_image)
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-# place executables next to this CMakeLists.txt
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-
 # Build executable (add stb_image.cpp to pull in implementation)
 add_executable(MyJPEGApp
     src/main.cpp
     src/stb_image.cpp
-    src/jpeg.cpp            # added JPEG class implementation
+    src/jpeg.cpp          # added JPEG class implementation
+    src/chaotic_keystream_generator.cpp # Add this line
 )
 
 # Link library (choose jpeg-static if using static version)
