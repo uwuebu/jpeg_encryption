@@ -47,8 +47,12 @@ public:
   // Generate AC permutation key using Jia chaotic map
   std::vector<int> generateACPermutationKey(int groupCount);
 
+  // Generate AC inter-block permutation key
+  std::vector<int> generateACInterBlockPermutationKey(
+    int numBlocks, int alpha, const std::vector<double>& jiaKS);
+
   // Helper function to extract significant digits
-  int extractSignificantDigits(double value, int digits);
+  uint64_t extractSignificantDigits(double value, int digits);
 
   // Process DC coefficients with a provided key
   void processDCWithKey(bool isLuminance, const std::vector<int>& key);

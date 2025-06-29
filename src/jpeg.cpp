@@ -1,6 +1,7 @@
 #include "jpeg.hpp"
 #include "chaotic_keystream_generator.hpp" // Replace .cpp with .hpp
-#include <algorithm> // Include this for std::remove
+#include <algorithm>                       // Include this for std::remove
+#include <cstdint>                         // for uint64_t
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -27,20 +28,22 @@ bool Jpeg::load(const std::wstring &path) {
   return true;
 }
 
-std::vector<int> Jpeg::generateDCPermutationKeystream(
-    int lenDC, const ChaoticSystems::MasterKey &key) {
+std::vector<int>
+Jpeg::generateDCPermutationKeystream(int lenDC,
+                                     const ChaoticSystems::MasterKey &key) {
 
   if (lenDC <= 1) {
     std::cerr << "Error: Invalid length for DC coefficients.\n";
     return {};
   }
 
-  auto jiaKeystream = key.generateJiaKeystream(lenDC - 1);
+  //auto jiaKeystream = key.generateJiaKeystream(lenDC - 1);
+  auto jiaKeystream = key.generateArnoldKeystream(lenDC - 1);
   std::vector<int> permutationKeystream;
 
-  for (int m = 0; m < lenDC - 1; ++m) {
+  for (int m = 0; m < lenDC - 2; ++m) {
     double sm = std::fabs(jiaKeystream[m]);
-    int sigDigits = extractSignificantDigits(sm, key.alpha);
+    uint64_t sigDigits = extractSignificantDigits(sm, key.alpha);
     int offset = sigDigits % (lenDC - m);
     permutationKeystream.push_back(m + offset);
   }
@@ -48,33 +51,15 @@ std::vector<int> Jpeg::generateDCPermutationKeystream(
   return permutationKeystream;
 }
 
-int Jpeg::extractSignificantDigits(double value, int digits) {
-  std::ostringstream oss;
-  oss << std::fixed << std::setprecision(digits + 5)
-      << std::fabs(value); // more than enough precision
-  std::string str = oss.str();
+uint64_t Jpeg::extractSignificantDigits(double value, int digits) {
+  if (value <= 0.0 || digits <= 0 || digits > 17)
+    return 0;
 
-  // Remove the decimal point
-  str.erase(std::remove(str.begin(), str.end(), '.'), str.end());
+  int exponent = static_cast<int>(std::floor(std::log10(value)));
+  double scaled = value / std::pow(10, exponent - digits + 1);
+  uint64_t result = static_cast<uint64_t>(scaled);
 
-  // Extract the first `digits` significant digits (skip leading zeros)
-  std::string digitsOnly;
-  for (char c : str) {
-    if (c != '0' || !digitsOnly.empty()) {
-      digitsOnly += c;
-      if (digitsOnly.size() == digits)
-        break;
-    }
-  }
-
-  while (digitsOnly.size() < digits) {
-    digitsOnly += '0'; // pad if necessary
-  }
-
-  // Convert only first 8–10 digits to avoid overflow
-  std::string safeDigits =
-      digitsOnly.substr(0, std::min(9, static_cast<int>(digitsOnly.size())));
-  return std::stoi(safeDigits);
+  return result;
 }
 
 void Jpeg::processDCWithKey(bool isLuminance, const std::vector<int> &key) {
@@ -82,7 +67,7 @@ void Jpeg::processDCWithKey(bool isLuminance, const std::vector<int> &key) {
 
   // Apply the permutation using the provided key
   int lenDC = dcCoefficients.size();
-  for (int m = 0; m < lenDC - 1; ++m) {
+  for (int m = 0; m < lenDC - 2; ++m) {
     int km = key[m];
 
     // Ensure km is within bounds
@@ -102,26 +87,12 @@ void Jpeg::processDCReverse(bool isLuminance, const std::vector<int> &key) {
 
   // Apply the reverse permutation using the provided key
   int lenDC = dcCoefficients.size();
-  for (int m = lenDC - 2; m >= 0; --m) { // Iterate through the key in reverse
+  for (int m = lenDC - 3; m >= 0; --m) { // Iterate through the key in reverse
     int km = key[m];
     std::swap(dcCoefficients[m], dcCoefficients[km]);
   }
 
   applyDC(dcCoefficients, isLuminance);
-}
-
-void Jpeg::processAC(bool isLuminance) {
-  std::vector<std::vector<int>> acCoefficients = extractAC(isLuminance);
-
-  // Apply some transformation to the AC coefficients
-  // for (auto &acBlock : acCoefficients) {
-  //   for (auto &ac : acBlock) {
-  //     // Example transformation: simple multiplication by a constant
-  //     ac *= 2; // Modify this as needed
-  //   }
-  // }
-
-  applyAC(acCoefficients, isLuminance);
 }
 
 bool Jpeg::save(const std::wstring &path, int quality) {
@@ -284,7 +255,7 @@ std::vector<int> Jpeg::substituteDC(const std::vector<int> &DC,
     }
 
     // Step 2: Extract sig only once
-    int sig = extractSignificantDigits(logisticKS[ks_index], alpha);
+    int64_t sig = extractSignificantDigits(logisticKS[ks_index], alpha);
     int ks_sign = sig % 2;
 
     // Step 2.2: Substitute and diffuse sign
@@ -335,7 +306,7 @@ std::vector<int> Jpeg::decryptDC(const std::vector<int> &DC_encrypted,
     }
 
     // Step 2: Extract sig once
-    int sig = extractSignificantDigits(logisticKS[ks_index], alpha);
+    int64_t sig = extractSignificantDigits(logisticKS[ks_index], alpha);
     int ks_sign = sig % 2;
 
     int sign_c = (dc_c < 0) ? 1 : 0;
@@ -362,8 +333,9 @@ std::vector<int> Jpeg::decryptDC(const std::vector<int> &DC_encrypted,
   return DC;
 }
 
-std::vector<std::vector<int>> Jpeg::generateACPermutationKeys(
-    bool isLuminance, const ChaoticSystems::MasterKey &key) {
+std::vector<std::vector<int>>
+Jpeg::generateACPermutationKeys(bool isLuminance,
+                                const ChaoticSystems::MasterKey &key) {
 
   auto acBlocks = extractAC(isLuminance);
   std::vector<std::vector<int>> keys;
@@ -380,10 +352,12 @@ std::vector<std::vector<int>> Jpeg::generateACPermutationKeys(
     }
 
     // Use master key's Jia keystream (use blockIndex as offset/seed)
-    auto jiaKS = key.generateJiaKeystream(nonZeroGroupCount - 1);
+    //auto jiaKS = key.generateJiaKeystream(nonZeroGroupCount - 1);
+    auto jiaKS = key.generateArnoldKeystream(nonZeroGroupCount - 1);
+
 
     std::vector<int> perm(nonZeroGroupCount - 1);
-    for (int i = 0; i < nonZeroGroupCount - 1; ++i) {
+    for (int i = 0; i < nonZeroGroupCount - 2; ++i) {
       double sm = std::fabs(jiaKS[i]);
       int offset = static_cast<int>(sm * (nonZeroGroupCount - i)) %
                    (nonZeroGroupCount - i);
@@ -546,13 +520,48 @@ void Jpeg::processACIntraBlock(bool isLuminance,
     auto nonZeroGroups = removeZeroGroups(groups, zeroGroupIndices);
 
     if (reverse) {
-      unshuffleGroups(nonZeroGroups, intraKey); // Reverse intra-block shuffling
-    } else {
-      shuffleGroups(nonZeroGroups, intraKey); // Apply intra-block shuffling
-    }
+      // First round reverse shuffle
+      unshuffleGroups(nonZeroGroups, intraKey);
 
-    reinsertZeroGroups(nonZeroGroups, zeroGroupIndices, groups);
-    block = flattenGroups(nonZeroGroups);
+      // Reinsert zeros (round 1 done)
+      reinsertZeroGroups(nonZeroGroups, zeroGroupIndices, groups);
+
+      // Extract groups again (for second round)
+      std::vector<int> zeroGroupIndices2;
+      auto groups2 =
+          extractACGroups(flattenGroups(nonZeroGroups), zeroGroupIndices2);
+      auto nonZeroGroups2 = removeZeroGroups(groups2, zeroGroupIndices2);
+
+      // Second round reverse shuffle
+      if (!nonZeroGroups2.empty()) {
+        unshuffleGroups(nonZeroGroups2, intraKey);
+      }
+
+      // Final reinsertion
+      reinsertZeroGroups(nonZeroGroups2, zeroGroupIndices2, groups2);
+      block = flattenGroups(nonZeroGroups2);
+    } else {
+      // First round shuffle
+      shuffleGroups(nonZeroGroups, intraKey);
+
+      // Reinsert zeros (round 1 done)
+      reinsertZeroGroups(nonZeroGroups, zeroGroupIndices, groups);
+
+      // Extract groups again (for second round)
+      std::vector<int> zeroGroupIndices2;
+      auto groups2 =
+          extractACGroups(flattenGroups(nonZeroGroups), zeroGroupIndices2);
+      auto nonZeroGroups2 = removeZeroGroups(groups2, zeroGroupIndices2);
+
+      // Second round shuffle
+      if (!nonZeroGroups2.empty()) {
+        shuffleGroups(nonZeroGroups2, intraKey);
+      }
+
+      // Final reinsertion
+      reinsertZeroGroups(nonZeroGroups2, zeroGroupIndices2, groups2);
+      block = flattenGroups(nonZeroGroups2);
+    }
   }
 
   applyAC(acBlocks, isLuminance);
@@ -595,7 +604,7 @@ void Jpeg::applyNonZeroAC(const std::vector<int> &encryptedAC,
 
 void Jpeg::substituteACInterBlock(
     bool isLuminance, const std::vector<double> &logisticKeyStream) {
-    
+
   auto acBlocks = extractAC(isLuminance);
 
   std::vector<int> allAC;
@@ -633,7 +642,7 @@ void Jpeg::substituteACInterBlock(
     int abs_val = std::abs(val);
 
     if (abs_val == 1) {
-      int key_bit = extractSignificantDigits(logisticKeyStream[i], 1) & 1;
+      int64_t key_bit = extractSignificantDigits(logisticKeyStream[i], 1) & 1;
       int sign_c = key_bit ^ sign_c_prev ^ sign;
       sign_c_prev = sign_c;
       encryptedAC[i] = (sign_c == 1) ? -1 : 1;
@@ -645,7 +654,8 @@ void Jpeg::substituteACInterBlock(
     int high_bit = 1 << (bitLen - 1);
     int low_mask = high_bit - 1;
 
-    int sig = extractSignificantDigits(logisticKeyStream[i], std::max(1, bitLen));
+    int64_t sig =
+        extractSignificantDigits(logisticKeyStream[i], std::max(1, bitLen));
     int key_bit = sig % 2;
     int key_mask = sig & low_mask;
 
@@ -668,10 +678,9 @@ void Jpeg::substituteACInterBlock(
   applyNonZeroAC(encryptedAC, isLuminance);
 }
 
-
 void Jpeg::reverseSubstituteACInterBlock(
     bool isLuminance, const std::vector<double> &logisticKeyStream) {
-    
+
   auto acBlocks = extractAC(isLuminance);
 
   std::vector<int> allAC;
@@ -709,7 +718,7 @@ void Jpeg::reverseSubstituteACInterBlock(
     int abs_c = std::abs(val_c);
 
     if (abs_c == 1) {
-      int sig = extractSignificantDigits(logisticKeyStream[i], 1);
+      int64_t sig = extractSignificantDigits(logisticKeyStream[i], 1);
       int key_bit = sig % 2;
       int sign_p = key_bit ^ sign_c_prev ^ sign_c;
       sign_c_prev = sign_c;
@@ -722,7 +731,8 @@ void Jpeg::reverseSubstituteACInterBlock(
     int high_bit = 1 << (bitLen - 1);
     int low_mask = high_bit - 1;
 
-    int sig = extractSignificantDigits(logisticKeyStream[i], std::max(1, bitLen));
+    int64_t sig =
+        extractSignificantDigits(logisticKeyStream[i], std::max(1, bitLen));
     int key_bit = sig % 2;
     int key_mask = sig & low_mask;
 
@@ -734,7 +744,8 @@ void Jpeg::reverseSubstituteACInterBlock(
     unmasked = (unmasked & low_mask) | high_bit;
 
     if (unmasked == 0) {
-      std::cerr << "[WARNING] Decrypted zero mag at i=" << i << ", corrected to MSB.\n";
+      std::cerr << "[WARNING] Decrypted zero mag at i=" << i
+                << ", corrected to MSB.\n";
       unmasked = high_bit;
     }
 
@@ -745,3 +756,17 @@ void Jpeg::reverseSubstituteACInterBlock(
   applyNonZeroAC(decryptedAC, isLuminance);
 }
 
+std::vector<int> Jpeg::generateACInterBlockPermutationKey(
+    int numBlocks, int alpha, const std::vector<double> &logisticKS) {
+  std::vector<int> permKey;
+
+  for (int m = 0; m < numBlocks - 1; ++m) {
+    double sm = std::fabs(logisticKS[m]);
+    int64_t sig = extractSignificantDigits(sm, alpha);
+    int offset = sig % (numBlocks - m);
+    int km = m + offset;
+    permKey.push_back(km); // Swap index for m
+  }
+
+  return permKey;
+}

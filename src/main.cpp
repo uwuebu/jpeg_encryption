@@ -1,15 +1,20 @@
 #include "chaotic_keystream_generator.hpp"
 #include "jpeg.hpp"
+#include <chrono> // Include for timing
 #include <filesystem>
-#include <iostream>
 #include <fstream>
+#include <iostream>
 #include <random>
 #include <stdio.h>
-#include <thread> // Include for threading
+#include <thread> // For parallel processing
 
 namespace fs = std::filesystem;
 
-// Generates a new MasterKey with random seeds
+// ==============================
+// === MASTER KEY GENERATION ===
+// ==============================
+
+// Generates a new chaotic key with randomized seeds for all parameters
 ChaoticSystems::MasterKey generateRandomMasterKey() {
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -25,13 +30,14 @@ ChaoticSystems::MasterKey generateRandomMasterKey() {
   key.jia_w0 = dist(gen);
   key.alpha = 15;
   key.burn_in = 200;
-  key.ac_block_seed = intDist(gen);
-  key.intra_block_seed = intDist(gen);
 
   return key;
 }
 
 int main() {
+  // ======================
+  // === SETUP PATHS ======
+  // ======================
   fs::path exeDir = fs::current_path();
   fs::path rawDir = exeDir / ".." / ".." / "images" / "raw";
   fs::path editedDir = exeDir / ".." / ".." / "images" / "edited";
@@ -41,7 +47,9 @@ int main() {
   fs::create_directories(editedDir);
   fs::create_directories(restoreDir);
 
-  // Load or create master key
+  // ===========================
+  // === LOAD OR GENERATE KEY ==
+  // ===========================
   ChaoticSystems::MasterKey key;
   if (fs::exists(keyFile)) {
     std::cout << "[INFO] Loaded master key from: " << keyFile << "\n";
@@ -52,8 +60,12 @@ int main() {
     key.saveToFile(keyFile.string());
   }
 
+  // ===========================
+  // === PROCESS IMAGE BATCH ===
+  // ===========================
   for (auto &entry : fs::directory_iterator(rawDir)) {
-    if (!entry.is_regular_file()) continue;
+    if (!entry.is_regular_file())
+      continue;
 
     fs::path inFile = entry.path();
     fs::path editFile = editedDir / inFile.filename();
@@ -65,123 +77,184 @@ int main() {
       continue;
     }
 
-    // Declare variables to be used in both encryption and decryption phases
-    std::vector<int> luminanceInterKey, chrominanceInterKey;
-    std::vector<double> luminanceLogisticKeystream, chrominanceLogisticKeystream;
-    std::vector<int> luminanceACInterKey, chrominanceACInterKey;
-    std::vector<std::vector<int>> luminanceIntraKeys, chrominanceIntraKeys;
-    std::vector<double> luminanceACKeystream, chrominanceACKeystream;
+    // ===========================================
+    // === ENCRYPTION LOOP (3 rounds of chaos) ===
+    // ===========================================
+    for (int round = 0; round < 1; ++round) {
+      std::cout << "[INFO] Encryption Round " << round + 1 << "\n";
 
-    // Threads for parallel encryption
-    std::thread luminanceDCThread([&]() {
-      int lenLuminanceDC = img.extractDC(true).size();
-      luminanceInterKey = img.generateDCPermutationKeystream(lenLuminanceDC, key);
-      luminanceLogisticKeystream = key.generateLogisticKeystream(lenLuminanceDC);
+      // === Run encryption operations in parallel
+      std::thread lumaDCThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img.processDCWithKey(true, img.generateDCPermutationKeystream(img.extractDC(true).size(), key));
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Luminance Permutation Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-      img.processDCWithKey(true, luminanceInterKey);
-      auto luminanceDC = img.extractDC(true);
-      auto substitutedLuminanceDC = img.substituteDC(luminanceDC, luminanceLogisticKeystream, key.alpha);
-      img.applyDC(substitutedLuminanceDC, true);
-    });
+        start = std::chrono::high_resolution_clock::now();
+        img.applyDC(img.substituteDC(img.extractDC(true), key.generateLogisticKeystream(img.extractDC(true).size()), key.alpha), true);
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Luminance Substitution Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
 
-    std::thread chrominanceDCThread([&]() {
-      int lenChrominanceDC = img.extractDC(false).size();
-      chrominanceInterKey = img.generateDCPermutationKeystream(lenChrominanceDC, key);
-      chrominanceLogisticKeystream = key.generateLogisticKeystream(lenChrominanceDC);
+      std::thread chromaDCThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img.processDCWithKey(false, img.generateDCPermutationKeystream(img.extractDC(false).size(), key));
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Chrominance Permutation Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-      img.processDCWithKey(false, chrominanceInterKey);
-      auto chrominanceDC = img.extractDC(false);
-      auto substitutedChrominanceDC = img.substituteDC(chrominanceDC, chrominanceLogisticKeystream, key.alpha);
-      img.applyDC(substitutedChrominanceDC, false);
-    });
+        start = std::chrono::high_resolution_clock::now();
+        img.applyDC(img.substituteDC(img.extractDC(false), key.generateLogisticKeystream(img.extractDC(false).size()), key.alpha), false);
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Chrominance Substitution Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
 
-    std::thread luminanceACThread([&]() {
-      int luminanceACBlockCount = img.extractAC(true).size();
-      luminanceACInterKey = key.generatePermutation(luminanceACBlockCount, key.ac_block_seed);
-      img.permuteACBlocks(true, luminanceACInterKey);
+      std::thread lumaACThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img.permuteACBlocks(true, img.generateACInterBlockPermutationKey(img.extractAC(true).size(), key.alpha, key.generateLogisticKeystream(img.extractAC(true).size() - 1)));
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Luminance Inter-block Permutation Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-      luminanceIntraKeys = img.generateACPermutationKeys(true, key);
-      img.processACIntraBlock(true, luminanceIntraKeys);
+        start = std::chrono::high_resolution_clock::now();
+        img.processACIntraBlock(true, img.generateACPermutationKeys(true, key));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Luminance Intra-block Permutation Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-      int luminanceNonZeroACCount = 0;
-      for (const auto &block : img.extractAC(true))
-        for (int coeff : block)
-          if (coeff != 0) ++luminanceNonZeroACCount;
+        start = std::chrono::high_resolution_clock::now();
+        img.substituteACInterBlock(true, key.generateLogisticKeystream(img.extractAC(true).size()));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Luminance Substitution Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
 
-      luminanceACKeystream = key.generateLogisticKeystream(luminanceNonZeroACCount);
-      img.substituteACInterBlock(true, luminanceACKeystream);
-    });
+      std::thread chromaACThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img.permuteACBlocks(false, img.generateACInterBlockPermutationKey(img.extractAC(false).size(), key.alpha, key.generateLogisticKeystream(img.extractAC(false).size() - 1)));
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Chrominance Inter-block Permutation Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-    std::thread chrominanceACThread([&]() {
-      int chrominanceACBlockCount = img.extractAC(false).size();
-      chrominanceACInterKey = key.generatePermutation(chrominanceACBlockCount, key.ac_block_seed + 1);
-      img.permuteACBlocks(false, chrominanceACInterKey);
+        start = std::chrono::high_resolution_clock::now();
+        img.processACIntraBlock(false, img.generateACPermutationKeys(false, key));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Chrominance Intra-block Permutation Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-      chrominanceIntraKeys = img.generateACPermutationKeys(false, key);
-      img.processACIntraBlock(false, chrominanceIntraKeys);
+        start = std::chrono::high_resolution_clock::now();
+        img.substituteACInterBlock(false, key.generateLogisticKeystream(img.extractAC(false).size()));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Chrominance Substitution Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
 
-      int chrominanceNonZeroACCount = 0;
-      for (const auto &block : img.extractAC(false))
-        for (int coeff : block)
-          if (coeff != 0) ++chrominanceNonZeroACCount;
+      lumaDCThread.join();
+      chromaDCThread.join();
+      lumaACThread.join();
+      chromaACThread.join();
+    }
 
-      chrominanceACKeystream = key.generateLogisticKeystream(chrominanceNonZeroACCount);
-      img.substituteACInterBlock(false, chrominanceACKeystream);
-    });
-
-    // Wait for all encryption threads to finish
-    luminanceDCThread.join();
-    chrominanceDCThread.join();
-    luminanceACThread.join();
-    chrominanceACThread.join();
-
-    // Save encrypted image
+    // === Save the encrypted JPEG image
     if (!img.save(editFile.wstring(), 100)) {
       std::wcerr << L"Failed to save edited " << editFile.wstring() << L"\n";
       continue;
     }
 
-    // ===== DECRYPTION PHASE =====
+    // ==================================
+    // === BEGIN DECRYPTION PHASE =======
+    // ==================================
     Jpeg img2;
     if (!img2.load(editFile.wstring())) {
       std::wcerr << L"Failed to reload edited " << editFile.wstring() << L"\n";
       continue;
     }
 
-    // Threads for parallel decryption
-    std::thread luminanceDCDecryptThread([&]() {
-      auto decryptedLuminanceDC = img2.decryptDC(img2.extractDC(true), luminanceLogisticKeystream, key.alpha);
-      img2.applyDC(decryptedLuminanceDC, true);
-      img2.processDCReverse(true, luminanceInterKey);
-    });
+    // === Run decryption in 3 reverse rounds
+    for (int round = 0; round < 1; ++round) {
+      std::cout << "[INFO] Decryption Round " << round + 1 << "\n";
 
-    std::thread chrominanceDCDecryptThread([&]() {
-      auto decryptedChrominanceDC = img2.decryptDC(img2.extractDC(false), chrominanceLogisticKeystream, key.alpha);
-      img2.applyDC(decryptedChrominanceDC, false);
-      img2.processDCReverse(false, chrominanceInterKey);
-    });
+      std::thread lumaDCDecryptThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img2.applyDC(img2.decryptDC(img2.extractDC(true), key.generateLogisticKeystream(img2.extractDC(true).size()), key.alpha), true);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Luminance Substitution Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-    std::thread luminanceACDecryptThread([&]() {
-      img2.reverseSubstituteACInterBlock(true, luminanceACKeystream);
-      img2.processACIntraBlock(true, luminanceIntraKeys, true);
-      img2.reversePermuteACBlocks(true, luminanceACInterKey);
-    });
+        start = std::chrono::high_resolution_clock::now();
+        img2.processDCReverse(true, img2.generateDCPermutationKeystream(img2.extractDC(true).size(), key));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Luminance Permutation Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
 
-    std::thread chrominanceACDecryptThread([&]() {
-      img2.reverseSubstituteACInterBlock(false, chrominanceACKeystream);
-      img2.processACIntraBlock(false, chrominanceIntraKeys, true);
-      img2.reversePermuteACBlocks(false, chrominanceACInterKey);
-    });
+      std::thread chromaDCDecryptThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img2.applyDC(img2.decryptDC(img2.extractDC(false), key.generateLogisticKeystream(img2.extractDC(false).size()), key.alpha), false);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Chrominance Substitution Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
 
-    // Wait for all decryption threads to finish
-    luminanceDCDecryptThread.join();
-    chrominanceDCDecryptThread.join();
-    luminanceACDecryptThread.join();
-    chrominanceACDecryptThread.join();
+        start = std::chrono::high_resolution_clock::now();
+        img2.processDCReverse(false, img2.generateDCPermutationKeystream(img2.extractDC(false).size(), key));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] DC Chrominance Permutation Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
 
-    // Save restored image
+      std::thread lumaACDecryptThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img2.reverseSubstituteACInterBlock(true, key.generateLogisticKeystream(img2.extractAC(true).size()));
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Luminance Substitution Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+
+        start = std::chrono::high_resolution_clock::now();
+        img2.processACIntraBlock(true, img2.generateACPermutationKeys(true, key), true);
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Luminance Intra-block Permutation Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+
+        start = std::chrono::high_resolution_clock::now();
+        img2.reversePermuteACBlocks(true, img2.generateACInterBlockPermutationKey(img2.extractAC(true).size(), key.alpha, key.generateLogisticKeystream(img2.extractAC(true).size() - 1)));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Luminance Inter-block Permutation Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
+
+      std::thread chromaACDecryptThread([&]() {
+        auto start = std::chrono::high_resolution_clock::now();
+        img2.reverseSubstituteACInterBlock(false, key.generateLogisticKeystream(img2.extractAC(false).size()));
+        auto end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Chrominance Substitution Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+
+        start = std::chrono::high_resolution_clock::now();
+        img2.processACIntraBlock(false, img2.generateACPermutationKeys(false, key), true);
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Chrominance Intra-block Permutation Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+
+        start = std::chrono::high_resolution_clock::now();
+        img2.reversePermuteACBlocks(false, img2.generateACInterBlockPermutationKey(img2.extractAC(false).size(), key.alpha, key.generateLogisticKeystream(img2.extractAC(false).size() - 1)));
+        end = std::chrono::high_resolution_clock::now();
+        std::cout << "[INFO] AC Chrominance Inter-block Permutation Reverse Time: "
+                  << std::chrono::duration<double>(end - start).count() << " seconds\n";
+      });
+
+      lumaDCDecryptThread.join();
+      chromaDCDecryptThread.join();
+      lumaACDecryptThread.join();
+      chromaACDecryptThread.join();
+    }
+
+    // === Save restored image (after full decryption)
     if (!img2.save(restoreFile.wstring(), 100)) {
-      std::wcerr << L"Failed to save restored " << restoreFile.wstring() << L"\n";
+      std::wcerr << L"Failed to save restored " << restoreFile.wstring()
+                 << L"\n";
       continue;
     }
   }

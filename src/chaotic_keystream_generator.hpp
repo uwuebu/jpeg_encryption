@@ -35,4 +35,13 @@ public:
                     int burnIn, double epsilon = 1e-14);
 };
 
+class Arnold3DKeystreamGenerator {
+public:
+  static std::vector<double> generateKeystream(
+      int steps, int burn_in,
+      int a, int b, int c, int d,
+      int modN, int x0, int y0, int z0);
+};
+
+
 } // namespace ChaoticSystems
